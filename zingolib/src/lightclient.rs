@@ -49,11 +49,9 @@ use zcash_client_backend::{
     proto::service::RawTransaction,
 };
 use zcash_primitives::{
-    consensus::{BlockHeight, BranchId, NetworkConstants},
-    memo::{Memo, MemoBytes},
-    transaction::{
+    consensus::{BlockHeight, BranchId, NetworkConstants}, legacy::TransparentAddress, memo::{Memo, MemoBytes}, transaction::{
         components::amount::NonNegativeAmount, fees::zip317::MINIMUM_FEE, Transaction, TxId,
-    },
+    }
 };
 use zcash_proofs::prover::LocalTxProver;
 use zingoconfig::{ZingoConfig, MAX_REORG};
@@ -524,7 +522,10 @@ impl LightClient {
             let encoded_ua = address.encode(&self.config.chain);
             let transparent = address
                 .transparent()
-                .map(|taddr| address_from_pubkeyhash(&self.config, *taddr));
+                .map(|taddr| match taddr {
+                    TransparentAddress::PublicKeyHash(bytes) => format!("{} (0x{})", address_from_pubkeyhash(&self.config, *taddr), hex::encode(bytes)),
+                    _ => unreachable!(),
+                });
             objectified_addresses.push(object! {
             "address" => encoded_ua,
             "receivers" => object!(

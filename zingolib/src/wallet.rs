@@ -485,7 +485,7 @@ impl LightWallet {
             .await
             .first()
             .map(|block| block.height)
-            .unwrap_or(self.transaction_context.config.sapling_activation_height() - 1)
+            .unwrap_or(0)
     }
 
     pub async fn maybe_verified_orchard_balance(&self, addr: Option<String>) -> Option<u64> {
