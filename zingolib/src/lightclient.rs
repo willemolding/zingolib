@@ -901,8 +901,7 @@ impl LightClient {
             self.wallet
                 .send_to_addresses(
                     sapling_prover,
-                    vec![crate::wallet::Pool::Orchard, crate::wallet::Pool::Sapling], // This policy doesn't allow
-                    // spend from transparent.
+                    vec![crate::wallet::Pool::Transparent, crate::wallet::Pool::Orchard, crate::wallet::Pool::Sapling], // allow spending transparent
                     receivers,
                     transaction_submission_height,
                     |transaction_bytes| {

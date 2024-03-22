@@ -336,7 +336,7 @@ pub async fn send_transaction(
     transaction_bytes: Box<[u8]>,
 ) -> Result<String, String> {
     println!("{}", hex::encode(&transaction_bytes));
-    Ok("")
+    Ok(String::new())
 
     // let client = Arc::new(GrpcConnector::new(uri));
     // let mut client = client
