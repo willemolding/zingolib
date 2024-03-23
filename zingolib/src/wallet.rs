@@ -233,11 +233,13 @@ impl LightWallet {
         <D as Domain>::Note: PartialEq + Clone,
         <D as Domain>::Recipient: traits::Recipient,
     {
+        let tree_bytes = hex::decode(D::get_tree(trees)).unwrap();
+        tracing::info!("Deserializing tree bytes {:?}", tree_bytes);
         zcash_primitives::merkle_tree::read_commitment_tree::<
             <D::WalletNote as notes::ShieldedNoteInterface>::Node,
             &[u8],
             COMMITMENT_TREE_LEVELS,
-        >(&hex::decode(D::get_tree(trees)).unwrap()[..])
+        >(&tree_bytes[..])
         .ok()
         .and_then(|tree| tree.to_frontier().take())
     }

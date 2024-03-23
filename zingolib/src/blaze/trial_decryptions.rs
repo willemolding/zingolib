@@ -152,10 +152,13 @@ impl TrialDecryptions {
 
         for compact_block in compact_blocks {
             let height = BlockHeight::from_u32(compact_block.height as u32);
+            tracing::info!("Trial decrypting block {}", height);
             let mut sapling_notes_to_mark_position_in_block = Vec::new();
             let mut orchard_notes_to_mark_position_in_block = Vec::new();
 
             for (transaction_num, compact_transaction) in compact_block.vtx.iter().enumerate() {
+                tracing::info!("Trial decrypting transaction {} in block {}", transaction_num, height);
+
                 let mut sapling_notes_to_mark_position_in_tx =
                     zip_outputs_with_retention_txids_indexes::<SaplingDomain>(compact_transaction);
                 let mut orchard_notes_to_mark_position_in_tx =
@@ -300,6 +303,8 @@ impl TrialDecryptions {
         for maybe_decrypted_output in maybe_decrypted_outputs.into_iter().enumerate() {
             let (output_num, witnessed) =
                 if let (i, Some(((note, to), _ivk_num))) = maybe_decrypted_output {
+                    tracing::info!("Successfully decrypted Detected txid {}", &transaction_id);
+
                     *transaction_metadata = true; // i.e. we got metadata
 
                     let wc = wc.clone();
@@ -352,7 +357,7 @@ impl TrialDecryptions {
                             witness.witnessed_position(),
                         );
 
-                        debug!("Trial decrypt Detected txid {}", &transaction_id);
+                        tracing::info!("Trial decrypt Detected txid {}", &transaction_id);
 
                         detected_transaction_id_sender
                             .send((
