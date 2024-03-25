@@ -335,34 +335,31 @@ pub async fn send_transaction(
     uri: http::Uri,
     transaction_bytes: Box<[u8]>,
 ) -> Result<String, String> {
-    println!("{}", hex::encode(&transaction_bytes));
-    Ok(String::new())
+    let client = Arc::new(GrpcConnector::new(uri));
+    let mut client = client
+        .get_client()
+        .await
+        .map_err(|e| format!("Error getting client: {:?}", e))?;
 
-    // let client = Arc::new(GrpcConnector::new(uri));
-    // let mut client = client
-    //     .get_client()
-    //     .await
-    //     .map_err(|e| format!("Error getting client: {:?}", e))?;
+    let request = Request::new(RawTransaction {
+        data: transaction_bytes.to_vec(),
+        height: 0,
+    });
 
-    // let request = Request::new(RawTransaction {
-    //     data: transaction_bytes.to_vec(),
-    //     height: 0,
-    // });
+    let response = client
+        .send_transaction(request)
+        .await
+        .map_err(|e| format!("Send Error: {}", e))?;
 
-    // let response = client
-    //     .send_transaction(request)
-    //     .await
-    //     .map_err(|e| format!("Send Error: {}", e))?;
+    let sendresponse = response.into_inner();
+    if sendresponse.error_code == 0 {
+        let mut transaction_id = sendresponse.error_message;
+        if transaction_id.starts_with('\"') && transaction_id.ends_with('\"') {
+            transaction_id = transaction_id[1..transaction_id.len() - 1].to_string();
+        }
 
-    // let sendresponse = response.into_inner();
-    // if sendresponse.error_code == 0 {
-    //     let mut transaction_id = sendresponse.error_message;
-    //     if transaction_id.starts_with('\"') && transaction_id.ends_with('\"') {
-    //         transaction_id = transaction_id[1..transaction_id.len() - 1].to_string();
-    //     }
-
-    //     Ok(transaction_id)
-    // } else {
-    //     Err(format!("Error: {:?}", sendresponse))
-    // }
+        Ok(transaction_id)
+    } else {
+        Err(format!("Error: {:?}", sendresponse))
+    }
 }
