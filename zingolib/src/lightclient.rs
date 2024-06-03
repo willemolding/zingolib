@@ -523,7 +523,7 @@ impl LightClient {
             let transparent = address
                 .transparent()
                 .map(|taddr| match taddr {
-                    TransparentAddress::PublicKeyHash(bytes) => format!("{} (0x{})", address_from_pubkeyhash(&self.config, *taddr), hex::encode(bytes)),
+                    TransparentAddress::PublicKeyHash(bytes) => format!("{}", address_from_pubkeyhash(&self.config, *taddr)),
                     _ => unreachable!(),
                 });
             objectified_addresses.push(object! {
@@ -1323,7 +1323,7 @@ impl LightClient {
                             ),
                         ) {
                             let price = price.read().await.clone();
-                            //debug!("Mempool attempting to scan {}", tx.txid());
+                            tracing::info!("Mempool attempting to scan {:?}", rtransaction);
                             let status = ConfirmationStatus::Broadcast(BlockHeight::from_u32(
                                 rtransaction.height as u32,
                             ));
