@@ -4,7 +4,7 @@
 #  This doesn't account for all dependency relations, for example, zingocli depends on zingoconfig directly (for now).
 [workspace]
 members = [
-    # "zingo-testutils",
+    "zingo-testutils",
     "integration-tests",
     "darkside-tests",
     "zingocli",

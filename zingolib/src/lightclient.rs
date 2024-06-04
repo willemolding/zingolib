@@ -523,7 +523,7 @@ impl LightClient {
             let transparent = address
                 .transparent()
                 .map(|taddr| match taddr {
-                    TransparentAddress::PublicKeyHash(bytes) => format!("{}", address_from_pubkeyhash(&self.config, *taddr)),
+                    TransparentAddress::PublicKeyHash(_) => format!("{}", address_from_pubkeyhash(&self.config, *taddr)),
                     _ => unreachable!(),
                 });
             objectified_addresses.push(object! {

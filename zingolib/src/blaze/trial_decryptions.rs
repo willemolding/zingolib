@@ -16,7 +16,6 @@ use crate::wallet::{
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use incrementalmerkletree::{Position, Retention};
-use log::debug;
 use orchard::{keys::IncomingViewingKey as OrchardIvk, note_encryption::OrchardDomain};
 use sapling_crypto::note_encryption::SaplingDomain;
 use sapling_crypto::SaplingIvk;
