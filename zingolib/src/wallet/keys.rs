@@ -1,3 +1,4 @@
+//! TODO: Add Mod Description Here!
 //! In all cases in this file "external_version" refers to a serialization version that is interpreted
 //! from a source outside of the code-base e.g. a wallet-file.
 use base58::ToBase58;
@@ -11,7 +12,7 @@ use zcash_client_backend::address;
 use zcash_primitives::{
     consensus::NetworkConstants, legacy::TransparentAddress, zip32::ChildIndex,
 };
-use zingoconfig::ZingoConfig;
+use zingoconfig::{ChainType, ZingoConfig};
 
 pub mod extended_transparent;
 pub mod unified;
@@ -45,6 +46,7 @@ impl ToBase58Check for [u8] {
     }
 }
 
+/// TODO: Add Doc Comment Here!
 pub fn get_zaddr_from_bip39seed(
     config: &ZingoConfig,
     bip39_seed: &[u8],
@@ -81,13 +83,16 @@ pub fn get_zaddr_from_bip39seed(
     (extsk, fvk, address)
 }
 
-pub fn is_shielded_address(addr: &str, config: &ZingoConfig) -> bool {
+/// Checks if the address str is a valid zcash address
+#[deprecated(note = "address strings are now immediately converted to valid addresses")]
+pub fn is_shielded_address(addr: &str, chain: &ChainType) -> bool {
     matches!(
-        address::Address::decode(&config.chain, addr),
+        address::Address::decode(chain, addr),
         Some(address::Address::Sapling(_)) | Some(address::Address::Unified(_))
     )
 }
 
+/// TODO: Add Doc Comment Here!
 /// STATIC METHODS
 pub fn address_from_pubkeyhash(config: &ZingoConfig, taddr: TransparentAddress) -> String {
     match taddr {

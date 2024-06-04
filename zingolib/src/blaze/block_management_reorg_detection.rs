@@ -3,7 +3,7 @@ use crate::wallet::{
     data::{BlockData, PoolNullifier},
     notes::ShieldedNoteInterface,
     traits::DomainWalletExt,
-    transactions::TransactionMetadataSet,
+    tx_map_and_maybe_trees::TxMapAndMaybeTrees,
 };
 use incrementalmerkletree::frontier::CommitmentTree;
 use incrementalmerkletree::{frontier, witness::IncrementalWitness, Hashable};
@@ -36,7 +36,7 @@ type Node<D> = <<D as DomainWalletExt>::WalletNote as ShieldedNoteInterface>::No
 const ORCHARD_START: &str = "000000";
 /// The data relating to the blocks in the current batch
 pub struct BlockManagementData {
-    // List of all downloaded blocks in the current batch and
+    // List of all downloaded Compact Blocks in the current batch and
     // their hashes/commitment trees. Stored with the tallest
     // block first, and the shortest last.
     blocks_in_current_batch: Arc<RwLock<Vec<BlockData>>>,
@@ -317,7 +317,7 @@ impl BlockManagementData {
     pub async fn invalidate_block(
         reorg_height: u64,
         existing_blocks: Arc<RwLock<Vec<BlockData>>>,
-        transaction_metadata_set: Arc<RwLock<TransactionMetadataSet>>,
+        transaction_metadata_set: Arc<RwLock<TxMapAndMaybeTrees>>,
     ) {
         let mut existing_blocks_writelock = existing_blocks.write().await;
         if existing_blocks_writelock.len() != 0 {
@@ -334,7 +334,7 @@ impl BlockManagementData {
             transaction_metadata_set
                 .write()
                 .await
-                .remove_txns_at_height(reorg_height);
+                .invalidate_all_transactions_after_or_at_height(reorg_height);
         }
     }
 
@@ -343,7 +343,7 @@ impl BlockManagementData {
         &self,
         start_block: u64,
         end_block: u64,
-        transaction_metadata_set: Arc<RwLock<TransactionMetadataSet>>,
+        transaction_metadata_set: Arc<RwLock<TxMapAndMaybeTrees>>,
         reorg_transmitter: UnboundedSender<Option<u64>>,
     ) -> (
         JoinHandle<Result<Option<u64>, String>>,
@@ -447,13 +447,19 @@ impl BlockManagementData {
         self.wait_for_block(after_height).await;
 
         {
-            // Read Lock
+            // Read Lock for the Block Cache
             let blocks = self.blocks_in_current_batch.read().await;
+            // take the height of the first/highest block in the batch and subtract target height to get index into the block list
             let pos = blocks.first().unwrap().height - after_height;
             match nf {
                 PoolNullifier::Sapling(nf) => {
                     let nf = nf.to_vec();
 
+                    // starting with a block and searching until the top of the batch
+                    //     if this block contains a transaction
+                    //         that contains a spent
+                    //             with the given nullifier
+                    //                 return its height
                     for i in (0..pos + 1).rev() {
                         let cb = &blocks.get(i as usize).unwrap().cb();
                         for compact_transaction in &cb.vtx {
@@ -602,7 +608,7 @@ struct BlockManagementThreadData {
 impl BlockManagementThreadData {
     async fn handle_reorgs_populate_data_inner(
         mut self,
-        transaction_metadata_set: Arc<RwLock<TransactionMetadataSet>>,
+        transaction_metadata_set: Arc<RwLock<TxMapAndMaybeTrees>>,
         reorg_transmitter: UnboundedSender<Option<u64>>,
     ) -> Result<Option<u64>, String> {
         // Temporary holding place for blocks while we process them.
@@ -757,7 +763,7 @@ pub fn update_tree_with_compact_transaction<D: DomainWalletExt>(
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::{blaze::test_utils::FakeCompactBlock, wallet::data::BlockData};
     use orchard::tree::MerkleHashOrchard;
     use zcash_primitives::block::BlockHash;
@@ -848,7 +854,9 @@ mod test {
             .handle_reorgs_and_populate_block_mangement_data(
                 start_block,
                 end_block,
-                Arc::new(RwLock::new(TransactionMetadataSet::new_with_witness_trees())),
+                Arc::new(RwLock::new(
+                    TxMapAndMaybeTrees::new_with_witness_trees_address_free(),
+                )),
                 reorg_transmitter,
             )
             .await;
@@ -897,7 +905,9 @@ mod test {
             .handle_reorgs_and_populate_block_mangement_data(
                 start_block,
                 end_block,
-                Arc::new(RwLock::new(TransactionMetadataSet::new_with_witness_trees())),
+                Arc::new(RwLock::new(
+                    TxMapAndMaybeTrees::new_with_witness_trees_address_free(),
+                )),
                 reorg_transmitter,
             )
             .await;
@@ -993,7 +1003,9 @@ mod test {
             .handle_reorgs_and_populate_block_mangement_data(
                 start_block,
                 end_block,
-                Arc::new(RwLock::new(TransactionMetadataSet::new_with_witness_trees())),
+                Arc::new(RwLock::new(
+                    TxMapAndMaybeTrees::new_with_witness_trees_address_free(),
+                )),
                 reorg_transmitter,
             )
             .await;

@@ -1,6 +1,8 @@
-use crate::wallet::keys::is_shielded_address;
-use crate::wallet::{MemoDownloadOption, Pool};
-use crate::{lightclient::LightClient, wallet::utils};
+//! An interface that passes strings (e.g. from a cli, into zingolib)
+//! upgrade-or-replace
+
+use crate::wallet::MemoDownloadOption;
+use crate::{lightclient::LightClient, wallet};
 use indoc::indoc;
 use json::object;
 use lazy_static::lazy_static;
@@ -11,23 +13,36 @@ use tokio::runtime::Runtime;
 use zcash_address::unified::{Container, Encoding, Ufvk};
 use zcash_client_backend::address::Address;
 use zcash_primitives::consensus::Parameters;
+use zcash_primitives::transaction::components::amount::NonNegativeAmount;
 use zcash_primitives::transaction::fees::zip317::MINIMUM_FEE;
+
+/// Errors associated with the commands interface
+mod error;
+/// Utilities associated with the commands interface
+mod utils;
 
 lazy_static! {
     static ref RT: Runtime = tokio::runtime::Runtime::new().unwrap();
 }
 
+/// TODO: Add Doc Comment Here!
 pub trait Command {
+    /// TODO: Add Doc Comment Here!
     fn help(&self) -> &'static str;
 
+    /// TODO: Add Doc Comment Here!
     fn short_help(&self) -> &'static str;
 
+    /// TODO: Add Doc Comment Here!
     fn exec(&self, _args: &[&str], lightclient: &LightClient) -> String;
 }
 
+/// TODO: Add Doc Comment Here!
 pub trait ShortCircuitedCommand {
+    /// TODO: Add Doc Comment Here!
     fn exec_without_lc(args: Vec<String>) -> String;
 }
+
 struct GetVersionCommand {}
 impl Command for GetVersionCommand {
     fn help(&self) -> &'static str {
@@ -44,6 +59,7 @@ impl Command for GetVersionCommand {
         crate::git_description().to_string()
     }
 }
+
 struct ChangeServerCommand {}
 impl Command for ChangeServerCommand {
     fn help(&self) -> &'static str {
@@ -192,7 +208,6 @@ impl Command for ParseAddressCommand {
                         zingoconfig::ChainType::Mainnet => "main",
                         zingoconfig::ChainType::Testnet => "test",
                         zingoconfig::ChainType::Regtest(_) => "regtest",
-                        zingoconfig::ChainType::FakeMainnet => unreachable!(),
                     };
 
                     match recipient_address {
@@ -449,6 +464,7 @@ impl Command for ClearCommand {
     }
 }
 
+/// TODO: Add Doc Comment Here!
 pub struct HelpCommand {}
 impl Command for HelpCommand {
     fn help(&self) -> &'static str {
@@ -490,6 +506,7 @@ impl Command for HelpCommand {
         }
     }
 }
+
 impl ShortCircuitedCommand for HelpCommand {
     fn exec_without_lc(args: Vec<String>) -> String {
         let mut responses = vec![];
@@ -513,6 +530,7 @@ impl ShortCircuitedCommand for HelpCommand {
         }
     }
 }
+
 struct InfoCommand {}
 impl Command for InfoCommand {
     fn help(&self) -> &'static str {
@@ -631,55 +649,6 @@ impl Command for ExportUfvkCommand {
     }
 }
 
-struct ShieldCommand {}
-impl Command for ShieldCommand {
-    fn help(&self) -> &'static str {
-        indoc! {r#"
-            Shield all your transparent and/or orchard funds
-            Usage:
-            shield ['transparent' or 'sapling' or 'all'] [optional address]
-
-            NOTE: The fee required to send this transaction (currently ZEC 0.0001) is additionally deducted from your balance.
-            Example:
-            shield all
-
-        "#}
-    }
-
-    fn short_help(&self) -> &'static str {
-        "Shield your transparent and/or sapling ZEC into the orchard pool"
-    }
-
-    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
-        if args.is_empty() || args.len() > 2 {
-            return self.help().to_string();
-        }
-        let pools_to_shield: &[Pool] = match args[0] {
-            "transparent" => &[Pool::Transparent],
-            "sapling" => &[Pool::Sapling],
-            "all" => &[Pool::Sapling, Pool::Transparent],
-            _ => return self.help().to_string(),
-        };
-        // Parse the address or amount
-        let address = if args.len() == 2 {
-            Some(args[1].to_string())
-        } else {
-            None
-        };
-        RT.block_on(async move {
-            match lightclient.do_shield(pools_to_shield, address).await {
-                Ok(transaction_id) => {
-                    object! { "txid" => transaction_id }
-                }
-                Err(e) => {
-                    object! { "error" => e }
-                }
-            }
-            .pretty(2)
-        })
-    }
-}
-
 struct EncryptMessageCommand {}
 impl Command for EncryptMessageCommand {
     fn help(&self) -> &'static str {
@@ -722,7 +691,8 @@ impl Command for EncryptMessageCommand {
                 return format!("{}\n{}", es, self.help());
             }
 
-            let memo = utils::interpret_memo_string(j["memo"].as_str().unwrap().to_string());
+            let memo =
+                wallet::utils::interpret_memo_string(j["memo"].as_str().unwrap().to_string());
             if memo.is_err() {
                 return format!("{}\n{}", memo.err().unwrap(), self.help());
             }
@@ -732,7 +702,7 @@ impl Command for EncryptMessageCommand {
         } else if args.len() == 2 {
             let to = args[0].to_string();
 
-            let memo = utils::interpret_memo_string(args[1].to_string());
+            let memo = wallet::utils::interpret_memo_string(args[1].to_string());
             if memo.is_err() {
                 return format!("{}\n{}", memo.err().unwrap(), self.help());
             }
@@ -785,137 +755,42 @@ impl Command for DecryptMessageCommand {
     }
 }
 
+#[cfg(not(feature = "zip317"))]
 struct SendCommand {}
+#[cfg(not(feature = "zip317"))]
 impl Command for SendCommand {
     fn help(&self) -> &'static str {
         indoc! {r#"
-            Send ZEC to a given address(es)
+            Send ZEC to the given address(es).
+            The 10_000 zat fee required to send this transaction is additionally deducted from your balance.
             Usage:
-            send <address> <amount in zatoshis> "optional_memo"
-            OR
-            send '[{'address': <address>, 'amount': <amount in zatoshis>, 'memo': <optional memo>}, ...]'
-
-            NOTE: The fee required to send this transaction (currently ZEC 0.0001) is additionally deducted from your balance.
+                send <address> <amount in zatoshis> "<optional memo>"
+                OR
+                send '[{"address":"<address>", "amount":<amount in zatoshis>, "memo":"<optional memo>"}, ...]'
             Example:
-            send ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000 "Hello from the command line"
+                send ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000 "Hello from the command line"
 
         "#}
     }
 
     fn short_help(&self) -> &'static str {
-        "Send ZEC to the given address"
+        "Send ZEC to the given address(es)."
     }
 
     fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
-        // Parse the args. There are two argument types.
-        // 1 - A set of 2(+1 optional) arguments for a single address send representing address, value, memo?
-        // 2 - A single argument in the form of a JSON string that is "[{address: address, value: value, memo: memo},...]"
-        if args.is_empty() || args.len() > 3 {
-            return self.help().to_string();
-        }
-
-        RT.block_on(async move {
-            // Check for a single argument that can be parsed as JSON
-            let send_args = if args.len() == 1 {
-                let arg_list = args[0];
-
-                let json_args = match json::parse(arg_list) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        let es = format!("Couldn't understand JSON: {}", e);
-                        return format!("{}\n{}", es, self.help());
-                    }
-                };
-
-                if !json_args.is_array() {
-                    return format!("Couldn't parse argument as array\n{}", self.help());
-                }
-
-                let fee = u64::from(MINIMUM_FEE);
-                let maybe_send_args = json_args
-                    .members()
-                    .map(|j| {
-                        if !j.has_key("address") || !j.has_key("amount") {
-                            Err("Need 'address' and 'amount'\n".to_string())
-                        } else {
-                            let amount = Some(j["amount"].as_u64().unwrap());
-
-                            match amount {
-                                Some(amt) => Ok((
-                                    j["address"].as_str().unwrap().to_string(),
-                                    amt,
-                                    j["memo"].as_str().map(|s| s.to_string()),
-                                )),
-                                None => Err(format!(
-                                    "Not enough in wallet to pay transaction fee of {}",
-                                    fee
-                                )),
-                            }
-                        }
-                    })
-                    .collect::<Result<Vec<(String, u64, Option<String>)>, String>>();
-
-                match maybe_send_args {
-                    Ok(a) => a.clone(),
-                    Err(s) => {
-                        return format!("Error: {}\n{}", s, self.help());
-                    }
-                }
-            } else if args.len() == 2 || args.len() == 3 {
-                let address = args[0].to_string();
-
-                // Make sure we can parse the amount
-                let value = match args[1].parse::<u64>() {
-                    Ok(amt) => amt,
-                    Err(e) => return format!("Couldn't parse amount: {}", e),
-                };
-
-                let memo = if args.len() == 3 {
-                    Some(args[2].to_string())
-                } else {
-                    None
-                };
-
-                // Memo has to be None if not sending to a shielded address
-                if memo.is_some() && !is_shielded_address(&address, &lightclient.config) {
-                    return format!("Can't send a memo to the non-shielded address {}", address);
-                }
-
-                vec![(args[0].to_string(), value, memo)]
-            } else {
-                return self.help().to_string();
-            };
-
-            // Convert to the right format.
-            let mut error = None;
-            let tos = send_args
-                .iter()
-                .map(|(a, v, m)| {
-                    (
-                        a.as_str(),
-                        *v,
-                        match m {
-                            // If the string starts with an "0x", and contains only hex chars ([a-f0-9]+) then
-                            // interpret it as a hex
-                            Some(s) => match utils::interpret_memo_string(s.clone()) {
-                                Ok(m) => Some(m),
-                                Err(e) => {
-                                    error = Some(format!("Couldn't interpret memo: {}", e));
-                                    None
-                                }
-                            },
-                            None => None,
-                        },
-                    )
-                })
-                .collect::<Vec<_>>();
-            if let Some(e) = error {
-                return e;
+        let send_inputs = match utils::parse_send_args(args, &lightclient.config().chain) {
+            Ok(args) => args,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help send' for correct usage and examples.",
+                    e
+                )
             }
-
-            match lightclient.do_send(tos).await {
-                Ok(transaction_id) => {
-                    object! { "txid" => transaction_id }
+        };
+        RT.block_on(async move {
+            match lightclient.do_send(send_inputs).await {
+                Ok(txid) => {
+                    object! { "txid" => txid.to_string() }
                 }
                 Err(e) => {
                     object! { "error" => e }
@@ -926,24 +801,381 @@ impl Command for SendCommand {
     }
 }
 
-fn wallet_deleter(lightclient: &LightClient) -> String {
-    RT.block_on(async move {
-        match lightclient.do_delete().await {
-            Ok(_) => {
-                let r = object! { "result" => "success",
-                "wallet_path" => lightclient.config.get_wallet_path().to_str().unwrap() };
-                r.pretty(2)
+#[cfg(not(feature = "zip317"))]
+struct ShieldCommand {}
+#[cfg(not(feature = "zip317"))]
+impl Command for ShieldCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Shield all your transparent and/or sapling funds
+            Usage:
+            shield ['transparent' or 'sapling' or 'all'] [optional address]
+
+            NOTE: The fee required to send this transaction (currently ZEC 0.0001) is additionally deducted from your balance.
+            Example:
+            shield all
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Shield your transparent and/or sapling ZEC into the orchard pool"
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        let (pools_to_shield, address) =
+            match utils::parse_shield_args(args, &lightclient.config().chain) {
+                Ok(args) => args,
+                Err(e) => {
+                    return format!(
+                        "Error: {}\nTry 'help shield' for correct usage and examples.",
+                        e
+                    )
+                }
+            };
+        RT.block_on(async move {
+            match lightclient.do_shield(&pools_to_shield, address).await {
+                Ok(txid) => {
+                    object! { "txid" => txid.to_string() }
+                }
+                Err(e) => {
+                    object! { "error" => e }
+                }
             }
-            Err(e) => {
-                let r = object! {
-                    "result" => "error",
-                    "error" => e
-                };
-                r.pretty(2)
-            }
-        }
-    })
+            .pretty(2)
+        })
+    }
 }
+
+#[cfg(feature = "zip317")]
+struct SendCommand {}
+#[cfg(feature = "zip317")]
+impl Command for SendCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Propose a transfer of ZEC to the given address(es).
+            The fee required to send this transaction will be added to the proposal and displayed to the user.
+            The 'confirm' command must be called to complete and broadcast the proposed transaction(s).
+
+            Usage:
+                send <address> <amount in zatoshis> "<optional memo>"
+                OR
+                send '[{"address":"<address>", "amount":<amount in zatoshis>, "memo":"<optional memo>"}, ...]'
+            Example:
+                send ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000 "Hello from the command line"
+                confirm
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Propose a transfer of ZEC to the given address(es) and display a proposal for confirmation."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        let receivers = match utils::parse_send_args(args, &lightclient.config().chain) {
+            Ok(receivers) => receivers,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help send' for correct usage and examples.",
+                    e
+                )
+            }
+        };
+        let request = match crate::data::receivers::transaction_request_from_receivers(receivers) {
+            Ok(request) => request,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help send' for correct usage and examples.",
+                    e
+                )
+            }
+        };
+        RT.block_on(async move {
+            match lightclient
+                .propose_send(request)
+                .await {
+                Ok(proposal) => {
+                    object! { "fee" => proposal.steps().iter().fold(0, |acc, step| acc + u64::from(step.balance().fee_required())) }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
+/*
+// Unimplemented
+#[cfg(feature = "zip317")]
+struct SendAllCommand {}
+#[cfg(feature = "zip317")]
+impl Command for SendAllCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Propose to transfer all ZEC from shielded pools to a given address.
+            The fee required to send this transaction will be added to the proposal and displayed to the user.
+            The 'confirm' command must be called to complete and broadcast the proposed transaction(s).
+
+            Warning:
+                Does not send transparent funds. These funds must be shielded first. Type `help shield` for more information.
+            Usage:
+                sendall <address> "<optional memo>"
+                OR
+                sendall '[{"address":"<address>", "memo":"<optional memo>"}]'
+            Example:
+                sendall ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d "Sending all funds"
+                confirm
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Propose to transfer all ZEC from shielded pools to a given address and display a proposal for confirmation."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        let (address, memo) = match utils::parse_send_all_args(args, &lightclient.config().chain) {
+            Ok(args) => args,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help sendall' for correct usage and examples.",
+                    e
+                )
+            }
+        };
+        RT.block_on(async move {
+            match lightclient
+                .propose_send_all(address, memo)
+                .await {
+                Ok(proposal) => {
+                    object! {
+                        "amount" => proposal.steps().iter().fold(0, |acc, step| acc + step.shielded_inputs().unwrap().notes().iter().fold(0, |acc, note| acc + u64::from(note.note().value()))),
+                        "fee" => proposal.steps().iter().fold(0, |acc, step| acc + u64::from(step.balance().fee_required())),
+                    }
+                }
+                Err(e) => {
+                    object! { "error" => e }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+*/
+#[cfg(feature = "zip317")]
+struct QuickSendCommand {}
+#[cfg(feature = "zip317")]
+impl Command for QuickSendCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Send ZEC to the given address(es). Combines `send` and `confirm` into a single command.
+            The fee required to send this transaction is additionally deducted from your balance.
+            Warning:
+                Transaction(s) will be sent without the user being aware of the fee amount.
+            Usage:
+                quicksend <address> <amount in zatoshis> "<optional memo>"
+                OR
+                quicksend '[{"address":"<address>", "amount":<amount in zatoshis>, "memo":"<optional memo>"}, ...]'
+            Example:
+                quicksend ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000 "Hello from the command line"
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Send ZEC to the given address(es). Combines `send` and `confirm` into a single command."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        let receivers = match utils::parse_send_args(args, &lightclient.config().chain) {
+            Ok(receivers) => receivers,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help quicksend' for correct usage and examples.",
+                    e
+                )
+            }
+        };
+        let request = match crate::data::receivers::transaction_request_from_receivers(receivers) {
+            Ok(request) => request,
+            Err(e) => {
+                return format!(
+                    "Error: {}\nTry 'help quicksend' for correct usage and examples.",
+                    e
+                )
+            }
+        };
+        RT.block_on(async move {
+            match lightclient.quick_send(request).await {
+                Ok(txids) => {
+                    object! { "txids" => txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
+#[cfg(feature = "zip317")]
+struct ShieldCommand {}
+#[cfg(feature = "zip317")]
+impl Command for ShieldCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Propose a shield of transparent funds to the orchard pool.
+            The fee required to send this transaction will be added to the proposal and displayed to the user.
+            The 'confirm' command must be called to complete and broadcast the proposed shield.
+
+            Usage:
+                shield
+            Example:
+                shield
+                confirm
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Propose a shield of transparent funds to the orchard pool and display a proposal for confirmation.."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        if !args.is_empty() {
+            return format!(
+                "Error: {}\nTry 'help shield' for correct usage and examples.",
+                error::CommandError::InvalidArguments
+            );
+        }
+
+        RT.block_on(async move {
+            match lightclient.propose_shield().await {
+                Ok(proposal) => {
+                    if proposal.steps().len() != 1 {
+                        return object! { "error" => "zip320 transactions not yet supported" }.pretty(2);
+                    }
+                    let step = proposal.steps().first();
+                    let Some(value_to_shield) = step
+                        .balance()
+                        .proposed_change()
+                        .iter()
+                        .try_fold(NonNegativeAmount::ZERO, |acc, c| acc + c.value()) else {
+                            return object! { "error" => "shield amount outside valid range of zatoshis" }
+                                .pretty(2);
+                    };
+                    let fee = step.balance().fee_required();
+                    object! {
+                        "value_to_shield" => value_to_shield.into_u64(),
+                        "fee" => fee.into_u64(),
+                    }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
+#[cfg(feature = "zip317")]
+struct QuickShieldCommand {}
+#[cfg(feature = "zip317")]
+impl Command for QuickShieldCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Shield transparent funds to the orchard pool. Combines `shield` and `confirm` into a single command.
+            The fee required to send this transaction is additionally deducted from your balance.
+            Warning:
+                Transaction(s) will be sent without the user being aware of the fee amount.
+            Usage:
+                quickshield
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Shield transparent funds to the orchard pool. Combines `shield` and `confirm` into a single command."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        if !args.is_empty() {
+            return format!(
+                "Error: {}\nTry 'help shield' for correct usage and examples.",
+                error::CommandError::InvalidArguments
+            );
+        }
+
+        RT.block_on(async move {
+            match lightclient
+                .quick_shield()
+                .await {
+                Ok(txids) => {
+                    object! { "txids" => txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
+#[cfg(feature = "zip317")]
+struct ConfirmCommand {}
+#[cfg(feature = "zip317")]
+impl Command for ConfirmCommand {
+    fn help(&self) -> &'static str {
+        indoc! {r#"
+            Confirms the latest proposal, completing and broadcasting the transaction(s).
+            Fails if a proposal has not already been created with the 'send', 'send_all' or 'shield' commands.
+            Type 'help send', 'help sendall' or 'help shield' for more information on creating proposals.
+
+            Usage:
+                confirm
+            Example:
+                send ztestsapling1x65nq4dgp0qfywgxcwk9n0fvm4fysmapgr2q00p85ju252h6l7mmxu2jg9cqqhtvzd69jwhgv8d 200000 "Hello from the command line"
+                confirm
+
+        "#}
+    }
+
+    fn short_help(&self) -> &'static str {
+        "Confirms the latest proposal, completing and broadcasting the transaction(s)."
+    }
+
+    fn exec(&self, args: &[&str], lightclient: &LightClient) -> String {
+        if !args.is_empty() {
+            return format!(
+                "Error: {}\nTry 'help confirm' for correct usage and examples.",
+                error::CommandError::InvalidArguments
+            );
+        }
+
+        RT.block_on(async move {
+            match lightclient
+                .complete_and_broadcast_stored_proposal()
+                .await {
+                Ok(txids) => {
+                    object! { "txids" => txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>() }
+                }
+                Err(e) => {
+                    object! { "error" => e.to_string() }
+                }
+            }
+            .pretty(2)
+        })
+    }
+}
+
+// TODO: add a decline command which deletes latest proposal?
+
 struct DeleteCommand {}
 impl Command for DeleteCommand {
     fn help(&self) -> &'static str {
@@ -962,9 +1194,25 @@ impl Command for DeleteCommand {
     }
 
     fn exec(&self, _args: &[&str], lightclient: &LightClient) -> String {
-        wallet_deleter(lightclient)
+        RT.block_on(async move {
+            match lightclient.do_delete().await {
+                Ok(_) => {
+                    let r = object! { "result" => "success",
+                    "wallet_path" => lightclient.config.get_wallet_path().to_str().unwrap() };
+                    r.pretty(2)
+                }
+                Err(e) => {
+                    let r = object! {
+                        "result" => "error",
+                        "error" => e
+                    };
+                    r.pretty(2)
+                }
+            }
+        })
     }
 }
+
 struct SeedCommand {}
 impl Command for SeedCommand {
     fn help(&self) -> &'static str {
@@ -1039,11 +1287,12 @@ impl Command for ValueTxSummariesCommand {
             return format!("Didn't understand arguments\n{}", self.help());
         }
 
-        RT.block_on(async move {
-            json::JsonValue::from(lightclient.do_list_txsummaries().await).pretty(2)
-        })
+        RT.block_on(
+            async move { json::JsonValue::from(lightclient.list_txsummaries().await).pretty(2) },
+        )
     }
 }
+
 struct MemoBytesToAddressCommand {}
 impl Command for MemoBytesToAddressCommand {
     fn help(&self) -> &'static str {
@@ -1068,6 +1317,7 @@ impl Command for MemoBytesToAddressCommand {
         })
     }
 }
+
 struct ValueToAddressCommand {}
 impl Command for ValueToAddressCommand {
     fn help(&self) -> &'static str {
@@ -1092,6 +1342,7 @@ impl Command for ValueToAddressCommand {
         })
     }
 }
+
 struct SendsToAddressCommand {}
 impl Command for SendsToAddressCommand {
     fn help(&self) -> &'static str {
@@ -1116,6 +1367,7 @@ impl Command for SendsToAddressCommand {
         })
     }
 }
+
 struct SetOptionCommand {}
 impl Command for SetOptionCommand {
     fn help(&self) -> &'static str {
@@ -1460,6 +1712,7 @@ impl Command for DeprecatedNoCommand {
     }
 }
 
+/// TODO: Add Doc Comment Here!
 pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
     #[allow(unused_mut)]
     let mut entries: Vec<(&'static str, Box<dyn Command>)> = vec![
@@ -1507,9 +1760,17 @@ pub fn get_commands() -> HashMap<&'static str, Box<dyn Command>> {
     {
         entries.push(("list", Box::new(TransactionsCommand {})));
     }
+    #[cfg(feature = "zip317")]
+    {
+        //entries.push(("sendall", Box::new(SendAllCommand {})));
+        entries.push(("quicksend", Box::new(QuickSendCommand {})));
+        entries.push(("quickshield", Box::new(QuickShieldCommand {})));
+        entries.push(("confirm", Box::new(ConfirmCommand {})));
+    }
     entries.into_iter().collect()
 }
 
+/// TODO: Add Doc Comment Here!
 pub fn do_user_command(cmd: &str, args: &[&str], lightclient: &LightClient) -> String {
     match get_commands().get(cmd.to_ascii_lowercase().as_str()) {
         Some(cmd) => cmd.exec(args, lightclient),

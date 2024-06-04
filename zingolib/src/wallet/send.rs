@@ -1,6 +1,7 @@
-use crate::wallet::data::SpendableSaplingNote;
-use crate::wallet::notes::NoteInterface;
+//! This mod contains pieces of the impl LightWallet that are invoked during a send.
+use crate::wallet::notes::OutputInterface;
 use crate::wallet::now;
+use crate::{data::receivers::Receivers, wallet::data::SpendableSaplingNote};
 
 use futures::Future;
 
@@ -13,15 +14,19 @@ use rand::rngs::OsRng;
 use sapling_crypto::note_encryption::SaplingDomain;
 use sapling_crypto::prover::{OutputProver, SpendProver};
 
+use orchard::tree::MerkleHashOrchard;
 use shardtree::error::{QueryError, ShardTreeError};
-use zcash_client_backend::zip321::{Payment, TransactionRequest, Zip321Error};
+use shardtree::store::memory::MemoryShardStore;
+use shardtree::ShardTree;
+use zcash_note_encryption::Domain;
 
+use std::cmp;
 use std::convert::Infallible;
+use std::ops::Add;
 use std::sync::mpsc::channel;
 
-use zcash_client_backend::address;
+use zcash_client_backend::{address, PoolType, ShieldedProtocol};
 
-use zcash_primitives::memo::MemoBytes;
 use zcash_primitives::transaction::builder::{BuildResult, Progress};
 use zcash_primitives::transaction::components::amount::NonNegativeAmount;
 use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
@@ -36,30 +41,41 @@ use zcash_primitives::{
         fees::zip317::MINIMUM_FEE,
     },
 };
+use zcash_primitives::{memo::MemoBytes, transaction::TxId};
 use zingo_memo::create_wallet_internal_memo_version_0;
 use zingo_status::confirmation_status::ConfirmationStatus;
 
-use super::data::{SpendableOrchardNote, WitnessTrees};
+use crate::data::witness_trees::{WitnessTrees, COMMITMENT_TREE_LEVELS, MAX_SHARD_LEVEL};
 
-use super::notes;
+use super::data::SpendableOrchardNote;
 
-use super::traits::SpendableNote;
+use super::notes::ShieldedNoteInterface;
+use super::{notes, traits, LightWallet};
+
+use super::traits::{DomainWalletExt, Recipient, SpendableNote};
 use super::utils::get_price;
-use super::Pool;
 
+/// TODO: Add Doc Comment Here!
 #[derive(Debug, Clone)]
 pub struct SendProgress {
+    /// TODO: Add Doc Comment Here!
     pub id: u32,
+    /// TODO: Add Doc Comment Here!
     pub is_send_in_progress: bool,
+    /// TODO: Add Doc Comment Here!
     pub progress: u32,
+    /// TODO: Add Doc Comment Here!
     pub total: u32,
+    /// TODO: Add Doc Comment Here!
     pub last_error: Option<String>,
+    /// TODO: Add Doc Comment Here!
     pub last_transaction_id: Option<String>,
 }
 
-pub(crate) type NoteSelectionPolicy = Vec<Pool>;
+pub(crate) type NoteSelectionPolicy = Vec<PoolType>;
 
 impl SendProgress {
+    /// TODO: Add Doc Comment Here!
     pub fn new(id: u32) -> Self {
         SendProgress {
             id,
@@ -72,29 +88,92 @@ impl SendProgress {
     }
 }
 
-type Receivers = Vec<(address::Address, NonNegativeAmount, Option<MemoBytes>)>;
-
-// review! unit test this
-pub fn build_transaction_request_from_receivers(
-    receivers: Receivers,
-) -> Result<TransactionRequest, Zip321Error> {
-    let mut payments = vec![];
-    for out in receivers.clone() {
-        payments.push(Payment {
-            recipient_address: out.0,
-            amount: out.1,
-            memo: out.2,
-            label: None,
-            message: None,
-            other_params: vec![],
-        });
+fn add_notes_to_total<D: DomainWalletExt>(
+    candidates: Vec<D::SpendableNoteAT>,
+    target_amount: Amount,
+) -> (Vec<D::SpendableNoteAT>, Amount)
+where
+    D::Note: PartialEq + Clone,
+    D::Recipient: traits::Recipient,
+{
+    let mut notes = Vec::new();
+    let mut running_total = Amount::zero();
+    for note in candidates {
+        if running_total >= target_amount {
+            break;
+        }
+        running_total = running_total
+            .add(
+                Amount::from_u64(<D as DomainWalletExt>::WalletNote::value_from_note(
+                    note.note(),
+                ))
+                .expect("should be within the valid monetary range of zatoshis"),
+            )
+            .expect("should be within the valid monetary range of zatoshis");
+        notes.push(note);
     }
 
-    TransactionRequest::new(payments)
+    (notes, running_total)
 }
 
 type TxBuilder<'a> = Builder<'a, zingoconfig::ChainType, ()>;
-impl super::LightWallet {
+impl LightWallet {
+    pub(super) async fn get_orchard_anchor(
+        &self,
+        tree: &ShardTree<
+            MemoryShardStore<MerkleHashOrchard, BlockHeight>,
+            COMMITMENT_TREE_LEVELS,
+            MAX_SHARD_LEVEL,
+        >,
+    ) -> Result<orchard::Anchor, ShardTreeError<Infallible>> {
+        Ok(orchard::Anchor::from(tree.root_at_checkpoint_depth(
+            self.transaction_context.config.reorg_buffer_offset as usize,
+        )?))
+    }
+
+    pub(super) async fn get_sapling_anchor(
+        &self,
+        tree: &ShardTree<
+            MemoryShardStore<sapling_crypto::Node, BlockHeight>,
+            COMMITMENT_TREE_LEVELS,
+            MAX_SHARD_LEVEL,
+        >,
+    ) -> Result<sapling_crypto::Anchor, ShardTreeError<Infallible>> {
+        Ok(sapling_crypto::Anchor::from(
+            tree.root_at_checkpoint_depth(
+                self.transaction_context.config.reorg_buffer_offset as usize,
+            )?,
+        ))
+    }
+
+    /// Determines the target height for a transaction, and the offset from which to
+    /// select anchors, based on the current synchronised block chain.
+    pub(super) async fn get_target_height_and_anchor_offset(&self) -> Option<(u32, usize)> {
+        let range = {
+            let blocks = self.blocks.read().await;
+            (
+                blocks.last().map(|block| block.height as u32),
+                blocks.first().map(|block| block.height as u32),
+            )
+        };
+        match range {
+            (Some(min_height), Some(max_height)) => {
+                let target_height = max_height + 1;
+
+                // Select an anchor ANCHOR_OFFSET back from the target block,
+                // unless that would be before the earliest block we have.
+                let anchor_height = cmp::max(
+                    target_height
+                        .saturating_sub(self.transaction_context.config.reorg_buffer_offset),
+                    min_height,
+                );
+
+                Some((target_height, (target_height - anchor_height) as usize))
+            }
+            _ => None,
+        }
+    }
+
     // Reset the send progress status to blank
     async fn reset_send_progress(&self) {
         let mut g = self.send_progress.write().await;
@@ -104,11 +183,12 @@ impl super::LightWallet {
         let _ = std::mem::replace(&mut *g, SendProgress::new(next_id));
     }
 
-    // Get the current sending status.
+    /// Get the current sending status.
     pub async fn get_send_progress(&self) -> SendProgress {
         self.send_progress.read().await.clone()
     }
 
+    /// TODO: Add Doc Comment Here!
     pub async fn send_to_addresses<F, Fut, P: SpendProver + OutputProver>(
         &self,
         sapling_prover: P,
@@ -116,7 +196,7 @@ impl super::LightWallet {
         receivers: Receivers,
         submission_height: BlockHeight,
         broadcast_fn: F,
-    ) -> Result<(String, Vec<u8>), String>
+    ) -> Result<TxId, String>
     where
         F: Fn(Box<[u8]>) -> Fut,
         Fut: Future<Output = Result<String, String>>,
@@ -150,9 +230,9 @@ impl super::LightWallet {
             .send_to_addresses_inner(build_result.transaction(), submission_height, broadcast_fn)
             .await
         {
-            Ok((transaction_id, raw_transaction)) => {
-                self.set_send_success(transaction_id.clone()).await;
-                Ok((transaction_id, raw_transaction))
+            Ok(transaction_id) => {
+                self.set_send_success(transaction_id.to_string()).await;
+                Ok(transaction_id)
             }
             Err(e) => {
                 self.set_send_error(e.to_string()).await;
@@ -160,6 +240,7 @@ impl super::LightWallet {
             }
         }
     }
+
     async fn create_publication_ready_transaction<P: SpendProver + OutputProver>(
         &self,
         submission_height: BlockHeight,
@@ -180,9 +261,8 @@ impl super::LightWallet {
             .read()
             .await;
         let witness_trees = txmds_readlock
-            .witness_trees
-            .as_ref()
-            .expect("If we have spend capability we have trees");
+            .witness_trees()
+            .ok_or("No spend capability.")?;
         let (tx_builder, total_shielded_receivers) = match self
             .create_and_populate_tx_builder(
                 submission_height,
@@ -252,6 +332,7 @@ impl super::LightWallet {
         progress_handle.await.unwrap();
         Ok(build_result)
     }
+
     async fn create_and_populate_tx_builder(
         &self,
         submission_height: BlockHeight,
@@ -269,7 +350,8 @@ impl super::LightWallet {
         let mut tx_builder;
         let mut proposed_fee = MINIMUM_FEE;
         let mut total_value_covered_by_selected;
-        let total_earmarked_for_recipients: u64 = receivers.iter().map(|to| u64::from(to.1)).sum();
+        let total_earmarked_for_recipients: u64 =
+            receivers.iter().map(|to| u64::from(to.amount)).sum();
         info!(
             "0: Creating transaction sending {} zatoshis to {} addresses",
             total_earmarked_for_recipients,
@@ -424,7 +506,12 @@ impl super::LightWallet {
             orchard::keys::OutgoingViewingKey::try_from(&*self.wallet_capability()).unwrap();
 
         let mut total_shielded_receivers = 0u32;
-        for (recipient_address, value, memo) in receivers {
+        for crate::data::receivers::Receiver {
+            recipient_address,
+            amount,
+            memo,
+        } in receivers
+        {
             // Compute memo if it exists
             let validated_memo = match memo {
                 None => MemoBytes::from(Memo::Empty),
@@ -433,11 +520,11 @@ impl super::LightWallet {
 
             if let Err(e) = match recipient_address {
                 address::Address::Transparent(to) => tx_builder
-                    .add_transparent_output(&to, value)
+                    .add_transparent_output(&to, amount)
                     .map_err(transaction::builder::Error::TransparentBuild),
                 address::Address::Sapling(to) => {
                     total_shielded_receivers += 1;
-                    tx_builder.add_sapling_output(Some(sapling_ovk), to, value, validated_memo)
+                    tx_builder.add_sapling_output(Some(sapling_ovk), to, amount, validated_memo)
                 }
                 address::Address::Unified(ua) => {
                     if let Some(orchard_addr) = ua.orchard() {
@@ -445,7 +532,7 @@ impl super::LightWallet {
                         tx_builder.add_orchard_output::<FixedFeeRule>(
                             Some(orchard_ovk.clone()),
                             *orchard_addr,
-                            u64::from(value),
+                            u64::from(amount),
                             validated_memo,
                         )
                     } else if let Some(sapling_addr) = ua.sapling() {
@@ -453,7 +540,7 @@ impl super::LightWallet {
                         tx_builder.add_sapling_output(
                             Some(sapling_ovk),
                             *sapling_addr,
-                            value,
+                            amount,
                             validated_memo,
                         )
                     } else {
@@ -469,6 +556,38 @@ impl super::LightWallet {
         Ok((total_shielded_receivers, tx_builder))
     }
 
+    async fn get_all_domain_specific_notes<D>(&self) -> Vec<D::SpendableNoteAT>
+    where
+        D: DomainWalletExt,
+        <D as Domain>::Recipient: Recipient,
+        <D as Domain>::Note: PartialEq + Clone,
+    {
+        let wc = self.wallet_capability();
+        let tranmds_lth = self.transactions();
+        let transaction_metadata_set = tranmds_lth.read().await;
+        let mut candidate_notes = transaction_metadata_set
+            .transaction_records_by_id
+            .iter()
+            .flat_map(|(transaction_id, transaction)| {
+                D::WalletNote::transaction_metadata_notes(transaction)
+                    .iter()
+                    .map(move |note| (*transaction_id, note))
+            })
+            .filter_map(
+                |(transaction_id, note): (transaction::TxId, &D::WalletNote)| -> Option <D::SpendableNoteAT> {
+                        // Get the spending key for the selected fvk, if we have it
+                        let extsk = D::wc_to_sk(&wc);
+                        SpendableNote::from(transaction_id, note, extsk.ok().as_ref())
+                }
+            )
+            .collect::<Vec<D::SpendableNoteAT>>();
+        candidate_notes.sort_unstable_by(|spendable_note_1, spendable_note_2| {
+            D::WalletNote::value_from_note(spendable_note_2.note())
+                .cmp(&D::WalletNote::value_from_note(spendable_note_1.note()))
+        });
+        candidate_notes
+    }
+
     async fn select_notes_and_utxos(
         &self,
         target_amount: Amount,
@@ -477,7 +596,7 @@ impl super::LightWallet {
         (
             Vec<SpendableOrchardNote>,
             Vec<SpendableSaplingNote>,
-            Vec<notes::TransparentNote>,
+            Vec<notes::TransparentOutput>,
             u64,
         ),
         u64,
@@ -494,12 +613,12 @@ impl super::LightWallet {
             match pool {
                 // Transparent: This opportunistic shielding sweeps all transparent value leaking identifying information to
                 // a funder of the wallet's transparent value. We should change this.
-                Pool::Transparent => {
+                PoolType::Transparent => {
                     utxos = self
                         .get_utxos()
                         .await
                         .iter()
-                        .filter(|utxo| utxo.unconfirmed_spent.is_none() && !utxo.is_spent())
+                        .filter(|utxo| utxo.pending_spent.is_none() && !utxo.is_spent())
                         .cloned()
                         .collect::<Vec<_>>();
                     all_transparent_value_in_wallet =
@@ -507,31 +626,27 @@ impl super::LightWallet {
                             (prev + Amount::from_u64(utxo.value).unwrap()).unwrap()
                         });
                 }
-                Pool::Sapling => {
+                PoolType::Shielded(ShieldedProtocol::Sapling) => {
                     let sapling_candidates = self
                         .get_all_domain_specific_notes::<SaplingDomain>()
                         .await
                         .into_iter()
                         .filter(|note| note.spend_key().is_some())
                         .collect();
-                    (sapling_notes, sapling_value_selected) = Self::add_notes_to_total::<
-                        SaplingDomain,
-                    >(
+                    (sapling_notes, sapling_value_selected) = add_notes_to_total::<SaplingDomain>(
                         sapling_candidates,
                         (target_amount - orchard_value_selected - all_transparent_value_in_wallet)
                             .unwrap(),
                     );
                 }
-                Pool::Orchard => {
+                PoolType::Shielded(ShieldedProtocol::Orchard) => {
                     let orchard_candidates = self
                         .get_all_domain_specific_notes::<OrchardDomain>()
                         .await
                         .into_iter()
                         .filter(|note| note.spend_key().is_some())
                         .collect();
-                    (orchard_notes, orchard_value_selected) = Self::add_notes_to_total::<
-                        OrchardDomain,
-                    >(
+                    (orchard_notes, orchard_value_selected) = add_notes_to_total::<OrchardDomain>(
                         orchard_candidates,
                         (target_amount - all_transparent_value_in_wallet - sapling_value_selected)
                             .unwrap(),
@@ -565,6 +680,7 @@ impl super::LightWallet {
         )
         .expect("u64 representable"))
     }
+
     fn add_change_output_to_builder<'a>(
         &self,
         mut tx_builder: TxBuilder<'a>,
@@ -575,7 +691,7 @@ impl super::LightWallet {
     ) -> Result<TxBuilder<'a>, String> {
         let destination_uas = receivers
             .iter()
-            .filter_map(|receiver| match receiver.0 {
+            .filter_map(|receiver| match receiver.recipient_address {
                 address::Address::Sapling(_) => None,
                 address::Address::Transparent(_) => None,
                 address::Address::Unified(ref ua) => Some(ua.clone()),
@@ -610,13 +726,14 @@ impl super::LightWallet {
         };
         Ok(tx_builder)
     }
+
     async fn add_spends_to_builder<'a>(
         &'a self,
         mut tx_builder: TxBuilder<'a>,
         witness_trees: &WitnessTrees,
         orchard_notes: &[SpendableOrchardNote],
         sapling_notes: &[SpendableSaplingNote],
-        utxos: &[notes::TransparentNote],
+        utxos: &[notes::TransparentOutput],
     ) -> Result<TxBuilder<'_>, String> {
         // Add all tinputs
         // Create a map from address -> sk for all taddrs, so we can spend from the
@@ -698,12 +815,13 @@ impl super::LightWallet {
         }
         Ok(tx_builder)
     }
-    async fn send_to_addresses_inner<F, Fut>(
+
+    pub(crate) async fn send_to_addresses_inner<F, Fut>(
         &self,
         transaction: &Transaction,
         submission_height: BlockHeight,
         broadcast_fn: F,
-    ) -> Result<(String, Vec<u8>), String>
+    ) -> Result<TxId, String>
     where
         F: Fn(Box<[u8]>) -> Fut,
         Fut: Future<Output = Result<String, String>>,
@@ -716,19 +834,45 @@ impl super::LightWallet {
         let mut raw_transaction = vec![];
         transaction.write(&mut raw_transaction).unwrap();
 
-        let transaction_id = broadcast_fn(raw_transaction.clone().into_boxed_slice()).await?;
+        let serverz_transaction_id =
+            broadcast_fn(raw_transaction.clone().into_boxed_slice()).await?;
 
         // Add this transaction to the mempool structure
         {
             let price = self.price.read().await.clone();
 
-            let status = ConfirmationStatus::Broadcast(submission_height);
+            let status = ConfirmationStatus::Pending(submission_height);
             self.transaction_context
                 .scan_full_tx(transaction, status, now() as u32, get_price(now(), &price))
                 .await;
         }
 
-        Ok((transaction_id, raw_transaction))
+        let calculated_txid = transaction.txid();
+
+        let accepted_txid = match crate::utils::conversion::txid_from_hex_encoded_str(
+            serverz_transaction_id.as_str(),
+        ) {
+            Ok(serverz_txid) => {
+                if calculated_txid != serverz_txid {
+                    // happens during darkside tests
+                    error!(
+                        "served txid {} does not match calulated txid {}",
+                        serverz_txid, calculated_txid,
+                    );
+                };
+                if self.transaction_context.config.accept_server_txids {
+                    serverz_txid
+                } else {
+                    calculated_txid
+                }
+            }
+            Err(e) => {
+                error!("server returned invalid txid {}", e);
+                calculated_txid
+            }
+        };
+
+        Ok(accepted_txid)
     }
 }
 
@@ -743,29 +887,36 @@ mod tests {
     };
     use zingoconfig::ChainType;
 
-    use super::{build_transaction_request_from_receivers, Receivers};
+    use crate::data::receivers::{transaction_request_from_receivers, Receivers};
 
     #[test]
     fn test_build_request() {
         let amount_1 = NonNegativeAmount::const_from_u64(20000);
         let recipient_address_1 =
-            Address::decode(&ChainType::Testnet, &"utest17wwv8nuvdnpjsxtu6ndz6grys5x8wphcwtzmg75wkx607c7cue9qz5kfraqzc7k9dfscmylazj4nkwazjj26s9rhyjxm0dcqm837ykgh2suv0at9eegndh3kvtfjwp3hhhcgk55y9d2ys56zkw8aaamcrv9cy0alj0ndvd0wll4gxhrk9y4yy9q9yg8yssrencl63uznqnkv7mk3w05".to_string()).unwrap();
+            Address::decode(&ChainType::Testnet, "utest17wwv8nuvdnpjsxtu6ndz6grys5x8wphcwtzmg75wkx607c7cue9qz5kfraqzc7k9dfscmylazj4nkwazjj26s9rhyjxm0dcqm837ykgh2suv0at9eegndh3kvtfjwp3hhhcgk55y9d2ys56zkw8aaamcrv9cy0alj0ndvd0wll4gxhrk9y4yy9q9yg8yssrencl63uznqnkv7mk3w05").unwrap();
         let memo_1 = None;
 
         let amount_2 = NonNegativeAmount::const_from_u64(20000);
         let recipient_address_2 =
-            Address::decode(&ChainType::Testnet, &"utest17wwv8nuvdnpjsxtu6ndz6grys5x8wphcwtzmg75wkx607c7cue9qz5kfraqzc7k9dfscmylazj4nkwazjj26s9rhyjxm0dcqm837ykgh2suv0at9eegndh3kvtfjwp3hhhcgk55y9d2ys56zkw8aaamcrv9cy0alj0ndvd0wll4gxhrk9y4yy9q9yg8yssrencl63uznqnkv7mk3w05".to_string()).unwrap();
+            Address::decode(&ChainType::Testnet, "utest17wwv8nuvdnpjsxtu6ndz6grys5x8wphcwtzmg75wkx607c7cue9qz5kfraqzc7k9dfscmylazj4nkwazjj26s9rhyjxm0dcqm837ykgh2suv0at9eegndh3kvtfjwp3hhhcgk55y9d2ys56zkw8aaamcrv9cy0alj0ndvd0wll4gxhrk9y4yy9q9yg8yssrencl63uznqnkv7mk3w05").unwrap();
         let memo_2 = Some(MemoBytes::from(
-            Memo::from_str(&"the lake wavers along the beach".to_string())
-                .expect("string can memofy"),
+            Memo::from_str("the lake wavers along the beach").expect("string can memofy"),
         ));
 
         let rec: Receivers = vec![
-            (recipient_address_1, amount_1, memo_1),
-            (recipient_address_2, amount_2, memo_2),
+            crate::data::receivers::Receiver {
+                recipient_address: recipient_address_1,
+                amount: amount_1,
+                memo: memo_1,
+            },
+            crate::data::receivers::Receiver {
+                recipient_address: recipient_address_2,
+                amount: amount_2,
+                memo: memo_2,
+            },
         ];
         let request: TransactionRequest =
-            build_transaction_request_from_receivers(rec).expect("rec can requestify");
+            transaction_request_from_receivers(rec).expect("rec can requestify");
 
         assert_eq!(
             request.total().expect("total"),

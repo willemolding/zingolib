@@ -1,42 +1,92 @@
+//! TODO: Add Mod Description Here!
 use std::io::Write;
 
 use byteorder::{ReadBytesExt, WriteBytesExt};
 
+use zcash_client_backend::PoolType;
 use zcash_primitives::transaction::{components::OutPoint, TxId};
 
-use super::NoteInterface;
+use crate::wallet::notes::{query::OutputSpendStatusQuery, OutputInterface};
+use crate::wallet::transaction_record::TransactionRecord;
 
+/// TODO: Add Doc Comment Here!
 #[derive(Clone, Debug, PartialEq)]
-pub struct TransparentNote {
+pub struct TransparentOutput {
+    /// TODO: Add Doc Comment Here!
     pub address: String,
+    /// TODO: Add Doc Comment Here!
     pub txid: TxId,
+    /// TODO: Add Doc Comment Here!
     pub output_index: u64,
+    /// TODO: Add Doc Comment Here!
     pub script: Vec<u8>,
+    /// TODO: Add Doc Comment Here!
     pub value: u64,
 
-    spent: Option<(TxId, u32)>, // If this utxo was confirmed spent Todo: potential data incoherence with unconfirmed_spent
+    spent: Option<(TxId, u32)>, // If this utxo was confirmed spent Todo: potential data incoherence with pending_spent
 
-    // If this utxo was spent in a send, but has not yet been confirmed.
-    // Contains the txid and height at which the Tx was broadcast
-    pub unconfirmed_spent: Option<(TxId, u32)>,
+    /// If this utxo was spent in a send, but has not yet been confirmed.
+    /// Contains the txid and height at which the Tx was broadcast
+    pub pending_spent: Option<(TxId, u32)>,
 }
 
-impl NoteInterface for TransparentNote {
+impl OutputInterface for TransparentOutput {
+    fn pool_type(&self) -> PoolType {
+        PoolType::Transparent
+    }
+
+    fn value(&self) -> u64 {
+        self.value
+    }
+
     fn spent(&self) -> &Option<(TxId, u32)> {
         &self.spent
     }
+
     fn spent_mut(&mut self) -> &mut Option<(TxId, u32)> {
         &mut self.spent
     }
+
     fn pending_spent(&self) -> &Option<(TxId, u32)> {
-        &self.unconfirmed_spent
+        &self.pending_spent
     }
+
     fn pending_spent_mut(&mut self) -> &mut Option<(TxId, u32)> {
-        &mut self.unconfirmed_spent
+        &mut self.pending_spent
+    }
+
+    fn transaction_record_to_outputs_vec(transaction_record: &TransactionRecord) -> Vec<&Self> {
+        transaction_record.transparent_outputs.iter().collect()
+    }
+    fn transaction_record_to_outputs_vec_query(
+        transaction_record: &TransactionRecord,
+        spend_status_query: OutputSpendStatusQuery,
+    ) -> Vec<&Self> {
+        transaction_record
+            .transparent_outputs
+            .iter()
+            .filter(|output| output.spend_status_query(spend_status_query))
+            .collect()
+    }
+    fn transaction_record_to_outputs_vec_mut(
+        transaction_record: &mut TransactionRecord,
+    ) -> Vec<&mut Self> {
+        transaction_record.transparent_outputs.iter_mut().collect()
+    }
+    fn transaction_record_to_outputs_vec_query_mut(
+        transaction_record: &mut TransactionRecord,
+        spend_status_query: OutputSpendStatusQuery,
+    ) -> Vec<&mut Self> {
+        transaction_record
+            .transparent_outputs
+            .iter_mut()
+            .filter(|output| output.spend_status_query(spend_status_query))
+            .collect()
     }
 }
 
-impl TransparentNote {
+impl TransparentOutput {
+    /// TODO: Add Doc Comment Here!
     pub fn from_parts(
         address: String,
         txid: TxId,
@@ -44,7 +94,7 @@ impl TransparentNote {
         script: Vec<u8>,
         value: u64,
         spent: Option<(TxId, u32)>,
-        unconfirmed_spent: Option<(TxId, u32)>,
+        pending_spent: Option<(TxId, u32)>,
     ) -> Self {
         Self {
             address,
@@ -53,18 +103,21 @@ impl TransparentNote {
             script,
             value,
             spent,
-            unconfirmed_spent,
+            pending_spent,
         }
     }
 
+    /// TODO: Add Doc Comment Here!
     pub fn to_outpoint(&self) -> OutPoint {
         OutPoint::new(*self.txid.as_ref(), self.output_index as u32)
     }
 
-    // write + read
+    /// write + read
     pub fn serialized_version() -> u64 {
         4
     }
+
+    /// TODO: Add Doc Comment Here!
     pub fn write<W: Write>(&self, mut writer: W) -> std::io::Result<()> {
         writer.write_u64::<byteorder::LittleEndian>(Self::serialized_version())?;
 
@@ -95,6 +148,8 @@ impl TransparentNote {
 
         Ok(())
     }
+
+    /// TODO: Add Doc Comment Here!
     pub fn read<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
         let version = reader.read_u64::<byteorder::LittleEndian>()?;
 
@@ -132,7 +187,7 @@ impl TransparentNote {
             })?
         };
 
-        let _unconfirmed_spent = if version == 3 {
+        let _pending_spent = if version == 3 {
             zcash_encoding::Optional::read(&mut reader, |r| {
                 let mut transaction_bytes = [0u8; 32];
                 r.read_exact(&mut transaction_bytes)?;
@@ -154,14 +209,85 @@ impl TransparentNote {
             None
         };
 
-        Ok(TransparentNote {
+        Ok(TransparentOutput {
             address,
             txid: transaction_id,
             output_index,
             script,
             value,
             spent: spent_tuple,
-            unconfirmed_spent: None,
+            pending_spent: None,
         })
+    }
+}
+
+#[cfg(test)]
+pub mod mocks {
+    //! Mock version of the struct for testing
+    use zcash_primitives::{legacy::TransparentAddress, transaction::TxId};
+
+    use crate::{mocks::build_method, wallet::notes::TransparentOutput};
+
+    /// to create a mock TransparentOutput
+    #[derive(Clone)]
+    pub(crate) struct TransparentOutputBuilder {
+        address: Option<String>,
+        txid: Option<TxId>,
+        pub output_index: Option<u64>,
+        script: Option<Vec<u8>>,
+        value: Option<u64>,
+        spent: Option<Option<(TxId, u32)>>,
+        pending_spent: Option<Option<(TxId, u32)>>,
+    }
+    #[allow(dead_code)] //TODO:  fix this gross hack that I tossed in to silence the language-analyzer false positive
+    impl TransparentOutputBuilder {
+        /// blank builder
+        pub fn new() -> Self {
+            Self {
+                address: None,
+                txid: None,
+                output_index: None,
+                script: None,
+                value: None,
+                spent: None,
+                pending_spent: None,
+            }
+        }
+        // Methods to set each field
+        build_method!(address, String);
+        build_method!(txid, TxId);
+        build_method!(output_index, u64);
+        build_method!(script, Vec<u8>);
+        build_method!(value, u64);
+        build_method!(spent, Option<(TxId, u32)>);
+        build_method!(pending_spent, Option<(TxId, u32)>);
+
+        /// builds a mock TransparentNote after all pieces are supplied
+        pub fn build(&self) -> TransparentOutput {
+            TransparentOutput::from_parts(
+                self.address.clone().unwrap(),
+                self.txid.unwrap(),
+                self.output_index.unwrap(),
+                self.script.clone().unwrap(),
+                self.value.unwrap(),
+                self.spent.unwrap(),
+                self.pending_spent.unwrap(),
+            )
+        }
+    }
+
+    impl Default for TransparentOutputBuilder {
+        fn default() -> Self {
+            let mut builder = Self::new();
+            builder
+                .address("default_address".to_string())
+                .txid(TxId::from_bytes([0u8; 32]))
+                .output_index(0)
+                .script(TransparentAddress::ScriptHash([0; 20]).script().0)
+                .value(100_000)
+                .spent(None)
+                .pending_spent(None);
+            builder
+        }
     }
 }

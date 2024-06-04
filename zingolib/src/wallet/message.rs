@@ -1,3 +1,4 @@
+//! TODO: Add Crate Discription Here!
 use byteorder::ReadBytesExt;
 use bytes::{Buf, Bytes, IntoBuf};
 use group::GroupEncoding;
@@ -7,7 +8,7 @@ use sapling_crypto::{
     note::ExtractedNoteCommitment,
     note_encryption::{try_sapling_note_decryption, PreparedIncomingViewingKey, SaplingDomain},
     value::NoteValue,
-    PaymentAddress, Rseed, SaplingIvk,
+    PaymentAddress, Rseed,
 };
 use std::io::{self, ErrorKind, Read};
 use zcash_note_encryption::{
@@ -104,7 +105,7 @@ impl Message {
         Ok(data)
     }
 
-    pub fn decrypt(data: &[u8], ivk: &SaplingIvk) -> io::Result<Message> {
+    pub fn decrypt(data: &[u8], ivk: &PreparedIncomingViewingKey) -> io::Result<Message> {
         if data.len() != 1 + Message::magic_word().len() + 32 + 32 + ENC_CIPHERTEXT_SIZE {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
@@ -182,7 +183,7 @@ impl Message {
         // really apply, since this note is not spendable anyway, so the rseed and the note itself
         // are not usable.
         match try_sapling_note_decryption(
-            &PreparedIncomingViewingKey::new(ivk),
+            ivk,
             &Unspendable {
                 cmu_bytes,
                 epk_bytes,
@@ -208,29 +209,17 @@ impl Message {
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use ff::Field;
-    use sapling_crypto::zip32::ExtendedSpendingKey;
     use zcash_note_encryption::OUT_PLAINTEXT_SIZE;
+
+    use crate::mocks::random_zaddr;
 
     use super::*;
 
-    fn get_random_zaddr() -> (ExtendedSpendingKey, SaplingIvk, PaymentAddress) {
-        let mut rng = OsRng;
-        let mut seed = [0u8; 32];
-        rng.fill(&mut seed);
-
-        let extsk = ExtendedSpendingKey::master(&seed);
-        let dfvk = extsk.to_diversifiable_full_viewing_key();
-        let fvk = dfvk;
-        let (_, addr) = fvk.default_address();
-
-        (extsk, fvk.fvk().vk.ivk(), addr)
-    }
-
     #[test]
     fn test_encrpyt_decrypt() {
-        let (_, ivk, to) = get_random_zaddr();
+        let (_, ivk, to) = random_zaddr();
 
         let msg = Memo::from_bytes("Hello World with some value!".to_string().as_bytes()).unwrap();
 
@@ -256,8 +245,8 @@ pub mod tests {
 
     #[test]
     fn test_bad_inputs() {
-        let (_, ivk1, to1) = get_random_zaddr();
-        let (_, ivk2, _) = get_random_zaddr();
+        let (_, ivk1, to1) = random_zaddr();
+        let (_, ivk2, _) = random_zaddr();
 
         let msg = Memo::from_bytes("Hello World with some value!".to_string().as_bytes()).unwrap();
 
@@ -278,7 +267,7 @@ pub mod tests {
         let magic_len = Message::magic_word().len();
         let prefix_len = magic_len + 1; // version byte
 
-        let (_, ivk, to) = get_random_zaddr();
+        let (_, ivk, to) = random_zaddr();
         let msg_str = "Hello World with some value!";
         let msg = Memo::from_bytes(msg_str.to_string().as_bytes()).unwrap();
 
@@ -365,7 +354,7 @@ pub mod tests {
 
     #[test]
     fn test_individual_bytes() {
-        let (_, ivk, to) = get_random_zaddr();
+        let (_, ivk, to) = random_zaddr();
         let msg_str = "Hello World with some value!";
         let msg = Memo::from_bytes(msg_str.to_string().as_bytes()).unwrap();
 
