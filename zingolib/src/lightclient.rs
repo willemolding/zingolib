@@ -49,9 +49,12 @@ use zcash_client_backend::{
     proto::service::RawTransaction,
 };
 use zcash_primitives::{
-    consensus::{BlockHeight, BranchId, NetworkConstants}, legacy::TransparentAddress, memo::{Memo, MemoBytes}, transaction::{
+    consensus::{BlockHeight, BranchId, NetworkConstants},
+    legacy::TransparentAddress,
+    memo::{Memo, MemoBytes},
+    transaction::{
         components::amount::NonNegativeAmount, fees::zip317::MINIMUM_FEE, Transaction, TxId,
-    }
+    },
 };
 use zcash_proofs::prover::LocalTxProver;
 use zingoconfig::{ZingoConfig, MAX_REORG};
@@ -520,12 +523,12 @@ impl LightClient {
         let mut objectified_addresses = Vec::new();
         for address in self.wallet.wallet_capability().addresses().iter() {
             let encoded_ua = address.encode(&self.config.chain);
-            let transparent = address
-                .transparent()
-                .map(|taddr| match taddr {
-                    TransparentAddress::PublicKeyHash(_) => format!("{}", address_from_pubkeyhash(&self.config, *taddr)),
-                    _ => unreachable!(),
-                });
+            let transparent = address.transparent().map(|taddr| match taddr {
+                TransparentAddress::PublicKeyHash(_) => {
+                    format!("{}", address_from_pubkeyhash(&self.config, *taddr))
+                }
+                _ => unreachable!(),
+            });
             objectified_addresses.push(object! {
             "address" => encoded_ua,
             "receivers" => object!(
@@ -901,7 +904,11 @@ impl LightClient {
             self.wallet
                 .send_to_addresses(
                     sapling_prover,
-                    vec![crate::wallet::Pool::Orchard, crate::wallet::Pool::Sapling, crate::wallet::Pool::Transparent], // allow spending transparent
+                    vec![
+                        crate::wallet::Pool::Orchard,
+                        crate::wallet::Pool::Sapling,
+                        crate::wallet::Pool::Transparent,
+                    ], // allow spending transparent
                     receivers,
                     transaction_submission_height,
                     |transaction_bytes| {

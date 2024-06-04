@@ -156,7 +156,11 @@ impl TrialDecryptions {
             let mut orchard_notes_to_mark_position_in_block = Vec::new();
 
             for (transaction_num, compact_transaction) in compact_block.vtx.iter().enumerate() {
-                tracing::info!("Trial decrypting transaction {} in block {}", transaction_num, height);
+                tracing::info!(
+                    "Trial decrypting transaction {} in block {}",
+                    transaction_num,
+                    height
+                );
 
                 let mut sapling_notes_to_mark_position_in_tx =
                     zip_outputs_with_retention_txids_indexes::<SaplingDomain>(compact_transaction);

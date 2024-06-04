@@ -511,7 +511,12 @@ impl BlockManagementData {
         D::ExtractedCommitmentBytes: Into<[u8; 32]>,
         D::Recipient: crate::wallet::traits::Recipient,
     {
-        tracing::info!("Getting witness for {}:{}:{}", height, transaction_num, output_num);
+        tracing::info!(
+            "Getting witness for {}:{}:{}",
+            height,
+            transaction_num,
+            output_num
+        );
         // Get the previous block's height, because that block's commitment trees are the states at the start
         // of the requested block.
         let prev_height = { u64::from(height) - 1 };
@@ -528,7 +533,9 @@ impl BlockManagementData {
                     frontier::CommitmentTree::<<D::WalletNote as ShieldedNoteInterface>::Node, 32>::empty()
                 } else {
                     self.unverified_treestates.write().await.push(tree_state);
-                    read_commitment_tree(&tree[..]).map_err(|e| format!("Error reading serialized commitment tree {:?}: {}", tree, e))?
+                    read_commitment_tree(&tree[..]).map_err(|e| {
+                        format!("Error reading serialized commitment tree {:?}: {}", tree, e)
+                    })?
                 }
             };
 
