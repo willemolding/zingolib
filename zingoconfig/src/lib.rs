@@ -560,9 +560,9 @@ impl Parameters for ChainType {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         use ChainType::*;
         match self {
-            Mainnet => Some(BlockHeight::from_u32(0)),
-            Testnet => Some(BlockHeight::from_u32(0)),
-            Regtest(regtest_network) => Some(BlockHeight::from_u32(0)),
+            Mainnet => Some(BlockHeight::from_u32(1)),
+            Testnet => Some(BlockHeight::from_u32(1)),
+            Regtest(regtest_network) => Some(BlockHeight::from_u32(1)),
         }
     }
 }
