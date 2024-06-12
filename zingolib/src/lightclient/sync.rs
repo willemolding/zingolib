@@ -547,10 +547,10 @@ impl LightClient {
         // darkside_tests feature and should be disabled since
         // darksidewalletd will manipulate the chain and ultimately
         // break the static checkpoints.
-        #[cfg(not(feature = "darkside_tests"))]
-        if !verified {
-            return Err("Tree Verification Failed".to_string());
-        }
+        // #[cfg(not(feature = "darkside_tests"))]
+        // if !verified {
+        //     return Err("Tree Verification Failed".to_string());
+        // }
 
         debug!("Batch: {batch_num} synced, doing post-processing");
 

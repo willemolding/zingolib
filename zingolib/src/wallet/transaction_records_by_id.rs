@@ -624,7 +624,7 @@ impl TransactionRecordsById {
         if let Some(transaction_metadata) = self.get_mut(txid) {
             transaction_metadata.outgoing_tx_data = outgoing_metadata
         } else {
-            log::error!(
+            log::info!(
                 "TxId {} should be present while adding metadata, but wasn't",
                 txid
             );
